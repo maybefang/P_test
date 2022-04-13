@@ -1,6 +1,8 @@
 import torch
 import numpy as np
+#import minpy.numpy as np
 from numpy.lib.stride_tricks import as_strided
+#from minpy.numpy.lib.stride_tricks import as_strided
 import torch.nn.functional as F
 import torch.nn as nn
 from torchvision import transforms, datasets
@@ -15,13 +17,13 @@ def im2col(input_data, ksize, out_h, out_w, input_shape, stride=1, pad=0):
     #out_w = (W + 2 * pad - ksize) // stride + 1
 
     img = np.pad(input_data, [(0, 0), (0, 0), (pad, pad), (pad, pad)], "constant")
-    print(img)
+    #print(img)
     #col = np.zeros((N, C, ksize, ksize, out_h, out_w))
 
     input_data = input_data.numpy()
     strides = (*input_data.strides[:-2], input_data.strides[-2]*stride, input_data.strides[-1]*stride, *input_data.strides[-2:])
     A = as_strided(input_data, shape=(N,C,out_h,out_w,ksize,ksize), strides=strides)
-    col = A.transpose(0, 4, 5, 1, 2, 3).reshape(N*out_h*out_w, -1)
+    col = A.transpose(0, 2, 3, 1, 4, 5).reshape(N*out_h*out_w, -1)
     #col.astype(float32)
     #print("col.shape:",col.shape)
     #print("col:",col)
@@ -38,10 +40,11 @@ def im2col_tensor(input_data, ksize, out_h, out_w, input_shape, stride=1, pad=0)
     #col = np.zeros((N, C, ksize, ksize, out_h, out_w))
 
     #strides = (*input_data.strides[:-2], input_data.strides[-2]*stride, input_data.strides[-1]*stride, *input_data.strides[-2:])
-    strides = (C*H*W,H*W,W*stride,stride,W*stride,stride)
+    strides = (C*H*W,H*W,H*stride,stride,W*stride,stride)
     
     A = torch.as_strided(img, size=(N,C,out_h,out_w,ksize,ksize), stride=strides)
-    col = A.permute(0, 4, 5, 1, 2, 3).reshape(N*out_h*out_w, -1)
+    #col = A.permute(0, 2, 3, 1, 4, 5).reshape(N*out_h*out_w, -1)#之后进行行跳过
+    col = A.permute(1,4,5,0,2,3).reshape(-1, N*out_h*out_w)#之后进行列跳过
     return col
 
 
@@ -80,7 +83,7 @@ def sparse_myconv2d(input, kernel, mask, stride=1, pad=0, bias=0):
     out_h = (H + 2 * pad - k_h) // stride + 1
     out_w = (W + 2 * pad - k_w) // stride + 1
     
-    #input_tile = torch.from_numpy(im2col(a,k_h,out_h,out_w,input_shape)).float()
+    #input_tile = torch.from_numpy(im2col(input,k_h,out_h,out_w,input_shape)).float()
     input_tensor = im2col_tensor(input,k_h,out_h,out_w,input_shape)#将输入平铺
     kernel_shape = kernel.shape
     kernel_tile = kernel.reshape(-1,kernel_shape[1]*kernel_shape[2]*kernel_shape[3]).t()#权重平铺
@@ -173,8 +176,8 @@ def testmylinear(inputdata,weight,mask,bias):
 inputdata = torch.randn(64,3,32,32,dtype=torch.float).cuda()
 weight = torch.randn(64,3,3,3,dtype=torch.float).cuda()
 bias = nn.Parameter(torch.zeros(1))
-lmask = torch.tensor([0.,1.,0.,1.,1.,1.,0.,1.,0.,1.,1.,1.,1.,1.,0.,0.,1.,1.,0.,0.,0.,1.,1.,1.,0.,1.,0.]).cuda()
-mask = torch.tensor([[[0.,1.,1.],[1.,1.,1.],[1.,0.,0.]],[[1.,0.,1.],[1.,1.,1.],[1.,0.,1.]],[[1.,1.,1.],[0.,1.,1.],[0.,1.,1.]]]).cuda()
+lmask = torch.tensor([0.,1.,0.,1.,1.,1.,0.,1.,0.,1.,1.,1.,1.,1.,0.,0.,1.,1.,0.,0.,0.,1.,1.,1.,0.,1.,0.])#.cuda()
+mask = torch.tensor([[[0.,1.,1.],[1.,1.,1.],[1.,0.,0.]],[[1.,0.,1.],[1.,1.,1.],[1.,0.,1.]],[[1.,1.,1.],[0.,1.,1.],[0.,1.,1.]]])#.cuda()
 
 linput = torch.randn(64,128,dtype=torch.float).cuda()
 lweight = torch.randn(10,128,dtype=torch.float).cuda()
@@ -231,8 +234,10 @@ gemm_time=sum(gemm_times)/loops
 
 print("my toal time:",myconv2dtime)
 '''
+
 print("pytorch total time:",pytorchtime)
 '''
+
 print("pytorch processing time:",pytorch_processing_time)
 print("pytorch conv2c time:",pytorch_conv2d_time)
 print("pytorch gemm time:",pytorch_gemm_time)

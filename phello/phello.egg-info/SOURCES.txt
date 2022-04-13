@@ -1,6 +1,0 @@
-im2col.cc
-setup.py
-phello.egg-info/PKG-INFO
-phello.egg-info/SOURCES.txt
-phello.egg-info/dependency_links.txt
-phello.egg-info/top_level.txt
