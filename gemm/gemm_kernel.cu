@@ -201,6 +201,7 @@ void calculate_dataingpu(float* d_input, float* d_weight,float* d_output, int64_
     //     return;// torch::from_blob(thrust::raw_pointer_cast(&d_output[0]),{M,N});
     // }
  
+    
     // 传递进矩阵相乘函数中的参数，具体含义请参考函数手册。
     float a=1; float b=0;
 
@@ -209,24 +210,28 @@ void calculate_dataingpu(float* d_input, float* d_weight,float* d_output, int64_
 
     //cudaEventRecord(start, 0);//计时开始
 
+    //std::cout <<"M N K: "<<M<<" "<<N<<" "<<K<< std::endl;
+
     // 矩阵相乘。该函数必然将数组解析成列优先数组
+    //计算的是d_weight转置*d_input转置
     cublasSgemm (
         handle,    // blas 库对象 
-        CUBLAS_OP_T,    // 矩阵 A 属性参数
-        CUBLAS_OP_T,    // 矩阵 B 属性参数
-        M,    // A, C 的行数 
-        N,    // B, C 的列数
-        K,    // A 的列数和 B 的行数
+        CUBLAS_OP_N,    // 矩阵 A 属性参数
+        CUBLAS_OP_N,    // 矩阵 B 属性参数
+        N,    // b转置, C转置 的行数 
+        M,    // a转置, C转置 的列数
+        K,    // A转置 的行数和 B转置 的列数
         &a,    // 运算式的 α 值
-        d_input,    // A 在显存中的地址
-        K,    // lda，因为是列优先，所以此处传入每列多少元素
-        d_weight,    // B 在显存中的地址
-        N,    // ldb，同lda
+        d_weight,    // A 在显存中的地址
+        N,    // lda，因为前面参数是CUBLAS_OP_T，是行优先，所以此处传入每行多少元素，即列数
+        d_input,    // B 在显存中的地址
+        K,    // ldb，同lda
         &b,    // 运算式的 β 值
         d_output,    // C 在显存中的地址(结果矩阵)
-        M    // ldc
+        N    // ldc
     );
     
+
     // 同步函数
     //cudaDeviceSynchronize();
 

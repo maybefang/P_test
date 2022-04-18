@@ -100,6 +100,7 @@ torch::Tensor mymultiply(torch::Tensor input, torch::Tensor weight, torch::Tenso
         int64_t size = m*n;
         torch::Device device(torch::kCUDA);
         
+        //std::cout<<weight[0][2]<<std::endl;
         //测时间参数初始化
         // cudaEvent_t start,start2,stop,stop2;
         // cudaEventCreate(&start);
@@ -141,10 +142,90 @@ torch::Tensor mymultiply(torch::Tensor input, torch::Tensor weight, torch::Tenso
         
         //calculate_dataingpu(input.data_ptr<float>(), weight.data_ptr<float>(), ret_gpu, size, m, n, k);
         //torch::Tensor ret_gpu_tensor=ret_gpu.toTensor({M,N});
-        
+        // for(int i=0;i<m;i++){
+        //     std::cout<<ret[i][0]<<std::endl;
+            
+        //     // for(int j=0;j<n;j++){
+        //     //     std::cout<<ret[i][j]<<std::endl;
+        //     // }
+        // }
         return ret;
     }
 }
+/*
+//直接从cuda上申请ret,返回时间
+float mymultiply(torch::Tensor input, torch::Tensor weight, torch::Tensor bias){//a:input b:kernel
+    int64_t m = input.size(0);
+    int64_t k = input.size(1);
+    int64_t n = weight.size(1);
+    
+    float elapsedTime;
+    
+    //auto    ret = torch::zeros({m, n});
+    //int64_t size = ret.numel();
+    
+    if(input.device().type()==torch::kCPU){
+        auto    ret = torch::zeros({m, n});
+        int64_t size = ret.numel();
+        calculate_dataincpu(input.data_ptr<float>(), weight.data_ptr<float>(), ret.data_ptr<float>(), size, m, n, k);
+        return ret;
+    }
+    else if(input.device().type()==torch::kCUDA){
+        int64_t size = m*n;
+        torch::Device device(torch::kCUDA);
+        
+        //测时间参数初始化
+        //cudaEvent_t start,stop;
+        //cudaEvent_t start2,stop2;
+        //cudaEventCreate(&start);
+        //cudaEventCreate(&start2);
+        //cudaEventCreate(&stop);
+        //cudaEventCreate(&stop2);
+
+        //gpu上执行任务
+        //auto ret = calculate_dataingpu(input, weight, size, m, n, k);
+        //std::cout<<".cc中ret的数据类型: "<<typeid(ret).name()<<std::endl;
+
+        //cudaEventRecord(start, 0);
+        
+        torch::Tensor ret = torch::zeros({m,n},device);
+        
+        //测时间停止参数
+        // cudaEventRecord(stop, 0);
+        // cudaEventSynchronize(stop);
+        // cudaEventElapsedTime(&elapsedTime, start, stop);
+        // //print("Time cost: %3.1f ms", elapsedTime);
+        // std::cout<<"初始化ret: "<<elapsedTime<<" ms"<<std::endl;
+        // cudaEventDestroy(start);
+        // cudaEventDestroy(stop);
+        
+        //std::cout<<"ret设备: "<<ret.device().type()<<std::endl;
+        //float* ret_gpu;
+        
+        //cudaEventRecord(start2, 0);
+        calculate_dataingpu(input.data_ptr<float>(), weight.data_ptr<float>(), ret.data_ptr<float>(), size, m, n, k);
+        
+        // //测时间停止参数
+        // cudaEventRecord(stop2, 0);
+        // cudaEventSynchronize(stop2);
+        // cudaEventElapsedTime(&elapsedTime2, start2, stop2);
+        // //print("Time cost: %3.1f ms", elapsedTime);
+        // std::cout<<"cc文件里总时间: "<<elapsedTime2<<" ms"<<std::endl;
+        // cudaEventDestroy(start2);
+        // cudaEventDestroy(stop2);
+        
+        //calculate_dataingpu(input.data_ptr<float>(), weight.data_ptr<float>(), ret_gpu, size, m, n, k);
+        //torch::Tensor ret_gpu_tensor=ret_gpu.toTensor({M,N});
+        // for(int i=0;i<m;i++){
+        //     std::cout<<ret[i][0]<<std::endl;
+            
+        //     // for(int j=0;j<n;j++){
+        //     //     std::cout<<ret[i][j]<<std::endl;
+        //     // }
+        // }
+        return ret;
+    }
+}*/
 
 //torch::Tensor mymultiply_nobias(torch::Tensor input, torch::Tensor weight){//a:input b:kernel
 /*

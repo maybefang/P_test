@@ -10,7 +10,7 @@ from torchvision import transforms, datasets
 import gemm
 import time
 
-
+#正常的im2col且在cpu中
 def im2col(input_data, ksize, out_h, out_w, input_shape, stride=1, pad=0):
     N, C, H, W = input_shape
     #out_h = (H + 2 * pad - ksize) // stride + 1
@@ -40,11 +40,12 @@ def im2col_tensor(input_data, ksize, out_h, out_w, input_shape, stride=1, pad=0)
     #col = np.zeros((N, C, ksize, ksize, out_h, out_w))
 
     #strides = (*input_data.strides[:-2], input_data.strides[-2]*stride, input_data.strides[-1]*stride, *input_data.strides[-2:])
-    strides = (C*H*W,H*W,H*stride,stride,W*stride,stride)
+    strides = (C*H*W,H*W,W*stride,stride,W*stride,stride)
     
     A = torch.as_strided(img, size=(N,C,out_h,out_w,ksize,ksize), stride=strides)
-    #col = A.permute(0, 2, 3, 1, 4, 5).reshape(N*out_h*out_w, -1)#之后进行行跳过
-    col = A.permute(1,4,5,0,2,3).reshape(-1, N*out_h*out_w)#之后进行列跳过
+    #col = A.permute(0, 2, 3, 1, 4, 5).reshape(N*out_h*out_w, -1)#之后进行列跳过
+    #col = A.permute(0, 4, 5, 1, 2, 3).reshape(N*out_h*out_w, -1)#之后进行列跳过,网上顺序
+    col = A.permute(1,4,5,0,2,3).reshape(-1, N*out_h*out_w)#之后进行行跳过
     return col
 
 
@@ -73,6 +74,7 @@ def sparse_myconv2d(input, kernel, mask, stride=1, pad=0, bias=0):
     #初始化计算处理数据时间和卷积时间event（测试时间包括im2col、剪枝（重新拼接）和gemm）
     im2col_start, im2col_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
     processing_start, processing_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
+    processing_weight_start, processing_weight_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
     gemm_start, gemm_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
 
     #计算im2col时间
@@ -92,14 +94,22 @@ def sparse_myconv2d(input, kernel, mask, stride=1, pad=0, bias=0):
     im2col_time=im2col_start.elapsed_time(im2col_end)
 
     #计算剪枝时间
-    processing_start.record()
     mask = mask.reshape(-1)#mask变为1维
     idx = [i.item() for i in mask.nonzero()]
-    input_tile = torch.index_select(input_tensor,1,torch.tensor(idx).cuda())#输入重新拼接成密集矩阵
-    kernel_tile = torch.index_select(kernel_tile,0,torch.tensor(idx).cuda())#权重重新拼接
+    idx = torch.tensor(idx).cuda()
+    
+    processing_start.record()
+    #input_tile = torch.index_select(input_tensor,1,idx)#输入重新拼接成密集矩阵
+    input_tile = torch.index_select(input_tensor,0,idx).t()#输入重新拼接成密集矩阵,行跳过并转置
     processing_end.record()
     torch.cuda.synchronize()
     processing_time=processing_start.elapsed_time(processing_end)
+
+    processing_weight_start.record()
+    kernel_tile = torch.index_select(kernel_tile,0,idx)#权重重新拼接
+    processing_weight_end.record()
+    torch.cuda.synchronize()
+    processing_weight_time=processing_weight_start.elapsed_time(processing_weight_end)
     
     #计算gemm时间
     gemm_start.record()
@@ -109,8 +119,8 @@ def sparse_myconv2d(input, kernel, mask, stride=1, pad=0, bias=0):
     gemm_time=gemm_start.elapsed_time(gemm_end)
     
     #output = output.reshape(N,kernel_shape[0],out_h,-1) #[batch_size, output_channel(kernel_size[0]), out_h, out_w]
-    
-    return output,im2col_time,processing_time,gemm_time
+    #output = output.reshape(N,-1,kernel_shape[0]).permute(0, 2, 1).reshape(N,kernel_shape[0],out_h,-1)
+    return output,im2col_time,processing_time,processing_weight_time,gemm_time
     
 
 
@@ -118,30 +128,31 @@ def sparse_myconv2d(input, kernel, mask, stride=1, pad=0, bias=0):
 #print(a.shape)
 def testpytorch(inputdata,weight,mask_pytorch):
     #处理数据和进行卷积的event
-    processing_start, processing_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
-    conv2d_start, conv2d_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
+    #processing_start, processing_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
+    #conv2d_start, conv2d_end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
 
     #计算处理数据时间
-    processing_start.record()
+    #processing_start.record()
     masked_weight = torch.einsum('ijkl,jkl->ijkl', weight, mask_pytorch)
-    processing_end.record()
-    torch.cuda.synchronize()
-    processing_time=processing_start.elapsed_time(processing_end)
+    #processing_end.record()
+    #torch.cuda.synchronize()
+    #processing_time=processing_start.elapsed_time(processing_end)
 
     #计算卷积时间（包括im2col和gemm）
-    conv2d_start.record()
+    #conv2d_start.record()
     conv_out_pytorch = torch.nn.functional.conv2d(inputdata, masked_weight, bias=None, stride=1,
             padding=0, dilation=1, groups=1)
-    conv2d_end.record()
-    torch.cuda.synchronize()
-    conv2d_time=conv2d_start.elapsed_time(conv2d_end)
-    return processing_time,conv2d_time
+    #conv2d_end.record()
+    #torch.cuda.synchronize()
+    #conv2d_time=conv2d_start.elapsed_time(conv2d_end)
+    #return processing_time,conv2d_time
             
 
 def testmyconv2d(inputdata,weight,mask,bias):
-    conv_out,im2col_time,processingtime,gimmtime = sparse_myconv2d(inputdata, weight, mask, bias=bias)
-    #output = sparse_myconv2d(inputdata, weight, mask, bias=bias)
-    return conv_out,im2col_time,processingtime,gimmtime
+    conv_out,im2col_time,processingtime,processingweighttime,gimmtime = sparse_myconv2d(inputdata, weight, mask, bias=bias)
+    #conv_out = sparse_myconv2d(inputdata, weight, mask, bias=bias)
+    #sparse_myconv2d(inputdata, weight, mask, bias=bias)
+    return conv_out,im2col_time,processingtime,processingweighttime,gimmtime
     
 def testpytorchlinear(inputdata,weight,mask):
     input_shape=inputdata.shape
@@ -161,8 +172,16 @@ def testpytorchlinear(inputdata,weight,mask):
     output = torch.nn.functional.linear(inputdata, masked_weight, None)
     end.record()
     torch.cuda.synchronize()
-    time=start.elapsed_time(end)
-    return time
+    time_linear=start.elapsed_time(end)
+
+    masked_weight = masked_weight.t()
+    start.record()
+    output = torch.mm(inputdata, masked_weight)
+    end.record()
+    torch.cuda.synchronize()
+    time_mm=start.elapsed_time(end)
+
+    return time_linear,time_mm
     
 def testmylinear(inputdata,weight,mask,bias):
     weight = weight.t()
@@ -176,8 +195,8 @@ def testmylinear(inputdata,weight,mask,bias):
 inputdata = torch.randn(64,3,32,32,dtype=torch.float).cuda()
 weight = torch.randn(64,3,3,3,dtype=torch.float).cuda()
 bias = nn.Parameter(torch.zeros(1))
-lmask = torch.tensor([0.,1.,0.,1.,1.,1.,0.,1.,0.,1.,1.,1.,1.,1.,0.,0.,1.,1.,0.,0.,0.,1.,1.,1.,0.,1.,0.])#.cuda()
-mask = torch.tensor([[[0.,1.,1.],[1.,1.,1.],[1.,0.,0.]],[[1.,0.,1.],[1.,1.,1.],[1.,0.,1.]],[[1.,1.,1.],[0.,1.,1.],[0.,1.,1.]]])#.cuda()
+lmask = torch.tensor([0.,1.,0.,1.,1.,1.,0.,1.,0.,1.,1.,1.,1.,1.,0.,0.,1.,1.,0.,0.,0.,1.,1.,1.,0.,1.,0.]).cuda()
+mask = torch.tensor([[[0.,1.,0.],[0.,0.,0.],[0.,0.,0.]],[[1.,0.,0.],[1.,0.,0.],[0.,0.,0.]],[[0.,0.,1.],[0.,0.,0.],[0.,0.,1.]]]).cuda()
 
 linput = torch.randn(64,128,dtype=torch.float).cuda()
 lweight = torch.randn(10,128,dtype=torch.float).cuda()
@@ -187,63 +206,122 @@ start, end = torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing
 
 loops=1000
 #测pytorch数据处理和conv2d
+'''
 for i in range(10):
     testpytorch(inputdata,weight,mask)
     
 
 pytorch_processing_times,pytorch_conv2d_times = [0 for i in range(loops)],[0 for i in range(loops)]
-#start.record()
+start.record()
 for i in range(loops):
-    pytorch_processing_times[i],pytorch_conv2d_times[i] =testpytorch(inputdata,weight,mask)
-    #output = testpytorch(inputdata,weight,mask)
-#end.record()
-#torch.cuda.synchronize()
-#pytorchtime = start.elapsed_time(end)/loops
-pytorch_processing_time = sum(pytorch_processing_times)/loops
-pytorch_conv2d_time = sum(pytorch_conv2d_times)/loops
-
+    #pytorch_processing_times[i],pytorch_conv2d_times[i] =testpytorch(inputdata,weight,mask)
+    testpytorch(inputdata,weight,mask)
+end.record()
+torch.cuda.synchronize()
+pytorchtime = start.elapsed_time(end)/loops
+#pytorch_processing_time = sum(pytorch_processing_times)/loops
+#pytorch_conv2d_time = sum(pytorch_conv2d_times)/loops
+'''
 #测pytorch矩阵乘
+'''
 for i in range(10):
     testpytorchlinear(inputdata,weight,lmask)
 
-pytorch_gemm_times=[0 for i in range(loops)]
+pytorch_linear_times,pytorch_mm_times=[0 for i in range(loops)],[0 for i in range(loops)]
 for i in range(loops):
-    pytorch_gemm_times[i]=testpytorchlinear(inputdata,weight,lmask)
-pytorch_gemm_time = sum(pytorch_gemm_times)/loops
-
+    pytorch_linear_times[i],pytorch_mm_times[i]=testpytorchlinear(inputdata,weight,lmask)
+pytorch_linear_time = sum(pytorch_linear_times)/loops
+pytorch_mm_time = sum(pytorch_mm_times)/loops
+'''
 #测ours
+
 for i in range(10):
     testmyconv2d(inputdata,weight,mask,bias)
 
 gemminc_times,im2col_times,processing_times,gemm_times=[0 for i in range(loops)],[0 for i in range(loops)],[0 for i in range(loops)],[0 for i in range(loops)]
+processing_times_weights = [0 for i in range(loops)]
 
-
-start.record()
+#start.record()
 for i in range(loops):
-    #output=testmyconv2d(inputdata,weight,mask,bias)
-    gemminc_times,im2col_times[i],processing_times[i],gemm_times[i]=testmyconv2d(inputdata,weight,mask,bias)
-end.record()
-torch.cuda.synchronize()
-myconv2dtime = start.elapsed_time(end)/loops
+    #testmyconv2d(inputdata,weight,mask,bias)
+    gemminc_times,im2col_times[i],processing_times[i],processing_times_weights[i],gemm_times[i]=testmyconv2d(inputdata,weight,mask,bias)
+#end.record()
+#torch.cuda.synchronize()
+#myconv2dtime = start.elapsed_time(end)/loops
 
 #gemminc_time=sum(gemminc_times)/loops
 im2col_time=sum(im2col_times)/loops
 processing_time=sum(processing_times)/loops
+processing_time_weight=sum(processing_times_weights)/loops
 gemm_time=sum(gemm_times)/loops
 
 
-print("my toal time:",myconv2dtime)
-'''
 
-print("pytorch total time:",pytorchtime)
-'''
 
-print("pytorch processing time:",pytorch_processing_time)
-print("pytorch conv2c time:",pytorch_conv2d_time)
-print("pytorch gemm time:",pytorch_gemm_time)
+#print("pytorch total time:",pytorchtime)
+#print("pytorch processing time:",pytorch_processing_time)
+#print("pytorch conv2c time:",pytorch_conv2d_time)
+#print("pytorch linear time:",pytorch_linear_time)
+#print("pytorch mm time:",pytorch_mm_time)
 print()
-print("my im2col time:",im2col_time)
+#print("my toal time:",myconv2dtime)
+#print("my im2col time:",im2col_time)
 print("my processing time:",processing_time)
-print("my gemm time in python:",gemm_time)
+print("my processing weight time:",processing_time_weight)
+#print("my gemm time in python:",gemm_time)
 #print("my gemm time in c++:",gemminc_time)
-print()
+#print()
+'''
+inputdata = torch.randn(64,3,32,32,dtype=torch.float).cuda()
+weight = torch.randn(64,3,3,3,dtype=torch.float).cuda()
+'''
+'''
+inputdata = torch.tensor([[[[1.0,2.0,3.0],
+                    [4.0,5.0,6.0],
+                    [7.0,8.0,9.0],
+                    [1.0,1.0,1.0]],
+                    
+                   [[2.0,2.0,3.0],
+                    [4.0,5.0,6.0],
+                    [7.0,8.0,9.0],
+                    [2.0,2.0,2.0]]],
+
+                  [[[3.0,12.0,13.0],
+                    [14.0,15.0,16.0],
+                    [17.0,18.0,19.0],
+                    [3.0,3.0,3.0]],
+                      
+                   [[4.0,12.0,13.0],
+                    [14.0,15.0,16.0],
+                    [17.0,18.0,19.0],
+                    [4.0,4.0,4.0]]]]).cuda()#[2,2,4,3]
+
+weight = torch.tensor([[[[1.0,2.0,3.0],
+                    [4.0,5.0,6.0],
+                    [1.0,1.0,1.0]],
+                    
+                   [[2.0,2.0,3.0],
+                    [4.0,5.0,6.0],
+                    [2.0,2.0,2.0]]]]).cuda()#[2,2,3,3]
+'''
+'''
+bias = nn.Parameter(torch.zeros(1))
+
+mask = torch.tensor([[[0.,1.,1.],[1.,1.,1.],[1.,0.,0.]],[[1.,0.,1.],[1.,1.,1.],[1.,0.,1.]],[[1.,1.,1.],[0.,1.,1.],[0.,1.,1.]]]).cuda()
+#mask = torch.tensor([[[0.,1.,1.],[1.,1.,1.],[1.,0.,0.]],[[1.,0.,1.],[1.,1.,1.],[1.,0.,1.]]]).cuda()
+
+my_out,a,b,c = sparse_myconv2d(inputdata, weight, mask, bias=bias)
+
+masked_weight = torch.einsum('ijkl,jkl->ijkl', weight, mask)
+pytorch_out = torch.nn.functional.conv2d(inputdata, masked_weight, bias=None, stride=1,
+            padding=0, dilation=1, groups=1)
+pytorch_out2 = torch.nn.functional.conv2d(inputdata, masked_weight, bias=None, stride=1,
+            padding=0, dilation=1, groups=1)
+#print(pytorch_out)
+#print(my_out)
+#my_out = my_out.reshape(1,-1)
+#pytorch_out = pytorch_out.reshape(1,-1)
+#chazhi = pytorch_out-my_out
+#print(sum(chazhi))
+print(my_out.equal(pytorch_out))
+'''
